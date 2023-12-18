@@ -29,6 +29,7 @@ static const struct flash_driver * const flash_drivers[] = {
 	&bluenrgx_flash,
 	&cc3220sf_flash,
 	&cc26xx_flash,
+	&hydrogen_flash,
 	&cfi_flash,
 	&dsp5680xx_flash,
 	&efm32_flash,
@@ -85,6 +86,7 @@ static const struct flash_driver * const flash_drivers[] = {
 	&xmc4xxx_flash,
 	&w600_flash,
 	&rsl10_flash,
+	&hydrogen_flash,
 	NULL,
 };
 

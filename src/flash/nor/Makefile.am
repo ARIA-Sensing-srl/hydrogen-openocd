@@ -24,6 +24,7 @@ NOR_DRIVERS = \
 	%D%/bluenrg-x.c \
 	%D%/cc3220sf.c \
 	%D%/cc26xx.c \
+	%D%/hydrogen.c \
 	%D%/cfi.c \
 	%D%/dsp5680xx_flash.c \
 	%D%/efm32.c \
@@ -86,6 +87,7 @@ NORHEADERS = \
 	%D%/cc3220sf.h \
 	%D%/bluenrg-x.h \
 	%D%/cc26xx.h \
+	%D%/hydrogen.h \
 	%D%/cfi.h \
 	%D%/driver.h \
 	%D%/imp.h \
