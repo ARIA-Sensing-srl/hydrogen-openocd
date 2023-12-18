@@ -17,13 +17,13 @@
 #include <target/image.h>
 #include "hydrogen.h"
 #include <helper/time_support.h>
-
+#include <target/riscv/riscv.h>
 #include <target/armv7m.h>
 
 
 
-#define FLASH_TIMEOUT 200000
-#define HYDROGEN_DRIVER_DEBUG 1
+#define FLASH_TIMEOUT 2000
+#define HYDROGEN_DRIVER_DEBUG 2
 #define HYDROGEN_FLASH_COMMAND_IDLE 0x00
 #define HYDROGEN_FLASH_COMMAND_READ_FLASHID 0x01
 #define HYDROGEN_FLASH_COMMAND_WRITE_PAGE 0x02
@@ -44,10 +44,19 @@
 #define HYDROGEN_DEVICE_TYPE1 0x01170117
 #define HYDROGEN_DEVICE_TYPE2 0x9d169d16
 
+#undef HYDROGEN_ALGO_BASE_ADDRESS
+#define HYDROGEN_ALGO_BASE_ADDRESS 0x1c000000
+#define HYDROGEN_ALGO_ENTRY_ADDRESS 0x1c000080
+
+#define HYDROGEN_WORKING_SIZE 0x1A000
+#define HYDROGEN_ALGO_BUFFER (HYDROGEN_RAM_ADDRESS_BUFFER)
+#define HYDROGEN_ALGO_PARAMS (HYDROGEN_RAM_ADDRESS_BUFFER+0x101)
+	
 
 
 struct hydrogen_bank {
 	const char *family_name;
+	struct riscv_info riscv_algo_info;
 	uint32_t user_id;
 	uint32_t device_type;
 	uint32_t sector_length;
@@ -56,14 +65,17 @@ struct hydrogen_bank {
 	const uint8_t *algo_code;
 	uint32_t algo_size;
 	uint32_t algo_working_size;
-	uint32_t buffer_addr[2];
-	uint32_t params_addr[2];
+	uint32_t buffer_addr;
+	uint32_t params_addr;
 };
 
 ///* Flash helper algorithm for hydrogen_v1 targets */
 //static const uint8_t hydrogen_v1_algo[] = {
 //#include "../../../contrib/loaders/flash/hydrogen/hydrogen_v1_algo.inc"
 //};
+static const uint8_t hydrogen_algo[] = {
+#include "../../../contrib/loaders/flash/hydrogen/hydrogen_algo.inc"
+};
 
 
 static int hydrogen_auto_probe(struct flash_bank *bank);
@@ -124,31 +136,40 @@ static int hydrogen_init(struct flash_bank *bank)
 
 	retval = target_alloc_working_area(target, hydrogen_bank->algo_working_size,
 				&hydrogen_bank->working_area);
-//	if (retval != ERROR_OK)
-//		return retval;
-//
-//	/* Confirm the defined working address is the area we need to use */
-//	if (hydrogen_bank->working_area->address != HYDROGEN_ALGO_BASE_ADDRESS)
-//		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
-//
-//	/* Write flash helper algorithm into target memory */
-//	retval = target_write_buffer(target, HYDROGEN_ALGO_BASE_ADDRESS,
-//				hydrogen_bank->algo_size, hydrogen_bank->algo_code);
-//	if (retval != ERROR_OK) {
-//		LOG_ERROR("%s: Failed to load flash helper algorithm",
-//			hydrogen_bank->family_name);
-//		target_free_working_area(target, hydrogen_bank->working_area);
-//		hydrogen_bank->working_area = NULL;
-//		return retval;
-//	}
-//
+	if (retval != ERROR_OK){
+		if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("target_alloc_working_area fail\n");
+		return retval;
+	}
+
+	/* Confirm the defined working address is the area we need to use */
+	if (hydrogen_bank->working_area->address != HYDROGEN_ALGO_BASE_ADDRESS){
+		if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Working area not match error\n");
+		return ERROR_TARGET_RESOURCE_NOT_AVAILABLE;
+	}
+
+	/* Write flash helper algorithm into target memory */
+	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Start writing loader helper\n");
+	retval = target_write_buffer(target, HYDROGEN_ALGO_BASE_ADDRESS,
+				hydrogen_bank->algo_size, hydrogen_bank->algo_code);
+	if (retval != ERROR_OK) {
+		LOG_ERROR("%s: Failed to load flash helper algorithm",
+			hydrogen_bank->family_name);
+		target_free_working_area(target, hydrogen_bank->working_area);
+		hydrogen_bank->working_area = NULL;
+		return retval;
+	}
+	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("End writing loader helper\n");
+
 //	/* Initialize the ARMv7 specific info to run the algorithm */
 //		hydrogen_bank->armv7m_info.common_magic = ARMV7M_COMMON_MAGIC;
 //		hydrogen_bank->armv7m_info.core_mode = ARM_MODE_THREAD;
-//
-//	/* Begin executing the flash helper algorithm */
-//	retval = target_start_algorithm(target, 0, NULL, 0, NULL,
-//				HYDROGEN_ALGO_BASE_ADDRESS, 0, &hydrogen_bank->armv7m_info);
+
+	/* Begin executing the flash helper algorithm */
+	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Start loader helper algo\n");
+	//retval = target_start_algorithm(target, 0, NULL, 0, NULL,
+	//			HYDROGEN_ALGO_ENTRY_ADDRESS, 0, &hydrogen_bank->riscv_algo_info);
+	target_resume(target, 0 , HYDROGEN_ALGO_ENTRY_ADDRESS, 1, 1);
+	
 	retval=ERROR_OK;
 	if (retval != ERROR_OK) {
 		LOG_ERROR("%s: Failed to start flash helper algorithm",
@@ -168,27 +189,28 @@ static int hydrogen_init(struct flash_bank *bank)
 	return retval;
 }
 
-//static int hydrogen_quit(struct flash_bank *bank)
-//{
-//	struct target *target = bank->target;
-//	struct hydrogen_bank *hydrogen_bank = bank->driver_priv;
-//
-//	int retval;
-//	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Enter in hydrogen_quit \n");
-//
-//	/* Regardless of the algo's status, attempt to halt the target */
-//	(void)target_halt(target);
-//
-//	/* Now confirm target halted and clean up from flash helper algorithm */
-//	retval = target_wait_algorithm(target, 0, NULL, 0, NULL, 0, FLASH_TIMEOUT,
-//				&hydrogen_bank->armv7m_info);
-//
-//	target_free_working_area(target, hydrogen_bank->working_area);
-//	hydrogen_bank->working_area = NULL;
-//
-//	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Exit from hydrogen_quit \n");
-//	return retval;
-//}
+static int hydrogen_quit(struct flash_bank *bank)
+{
+	struct target *target = bank->target;
+	struct hydrogen_bank *hydrogen_bank = bank->driver_priv;
+
+	int retval;
+	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Enter in hydrogen_quit \n");
+
+	/* Regardless of the algo's status, attempt to halt the target */
+	(void)target_halt(target);
+
+	/* Now confirm target halted and clean up from flash helper algorithm */
+	retval = target_wait_algorithm(target, 0, NULL, 0, NULL, 0, FLASH_TIMEOUT,
+				&hydrogen_bank->riscv_algo_info);
+
+	target_free_working_area(target, hydrogen_bank->working_area);
+	hydrogen_bank->working_area = NULL;
+
+	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Exit from hydrogen_quit \n");
+	return retval;
+}
+
 
 static int hydrogen_mass_erase(struct flash_bank *bank)
 {
@@ -210,8 +232,8 @@ static int hydrogen_mass_erase(struct flash_bank *bank)
 	target_write_u8(target,HYDROGEN_RAM_ADDRESS_COMMAND2EXEC,HYDROGEN_FLASH_COMMAND_ERASE_ALL);
 	retval = hydrogen_wait_algo_done(bank);
 
-	//	/* Regardless of errors, try to close down algo */
-	//	(void)hydrogen_quit(bank);
+		/* Regardless of errors, try to close down algo */
+		(void)hydrogen_quit(bank);
 
 	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Exit from hydrogen_mass_erase \n");
 
@@ -262,15 +284,19 @@ static int hydrogen_erase(struct flash_bank *bank, unsigned int first,
 	      }
 	  }
 
-	if (target->state != TARGET_HALTED) {
+	/*if (target->state != TARGET_HALTED) {
 		LOG_ERROR("Target not halted");
 		return ERROR_TARGET_NOT_HALTED;
-	}
+	}*/
+
+	
 	/* Do a mass erase if user requested all sectors of flash */
 	if ((first == 0) && (last == (bank->num_sectors - 1))) {
 	  /* Request mass erase of flash */
 	  return hydrogen_mass_erase(bank);
 	}
+	
+	(void)hydrogen_init(bank);
 
 	for(unsigned int i=first; i<last;i=i+1)
 	  {
@@ -281,8 +307,8 @@ static int hydrogen_erase(struct flash_bank *bank, unsigned int first,
 	    retval=hydrogen_wait_algo_done(bank);	    
 	  }
 	  
-	//	/* Regardless of errors, try to close down algo */
-	//	(void)hydrogen_quit(bank);
+		/* Regardless of errors, try to close down algo */
+		(void)hydrogen_quit(bank);
 
 	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Exit from in hydrogen_erase \n");
 
@@ -374,8 +400,8 @@ static int hydrogen_write(struct flash_bank *bank, const uint8_t *buffer,
 			retval = hydrogen_wait_algo_done(bank);
 		}
 	
-		//		/* Regardless of errors, try to close down algo */
-		//		(void)hydrogen_quit(bank);
+				/* Regardless of errors, try to close down algo */
+				(void)hydrogen_quit(bank);
 		 }
 	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Exit from hydrogen_write \n");
 
@@ -462,8 +488,8 @@ static int hydrogen_read(struct flash_bank *bank, uint8_t *buffer,
 			retval = hydrogen_wait_algo_done(bank);
 		}
 	
-		//		/* Regardless of errors, try to close down algo */
-		//		(void)hydrogen_quit(bank);
+				/* Regardless of errors, try to close down algo */
+				(void)hydrogen_quit(bank);
 		 }
 //	for(uint32_t aaa=0;aaa<count;aaa=aaa+1)
 //	  {
@@ -501,38 +527,22 @@ static int hydrogen_probe(struct flash_bank *bank)
 
 	// if the algo is not copied to CPU yet, do it
 	
-	target_write_u8(target, HYDROGEN_RAM_ADDRESS_COMMAND2EXEC, HYDROGEN_FLASH_COMMAND_READ_FLASHID);//command to read flash info
-	//wait until command executed:
-	hydrogen_wait_algo_done(bank);
-
-	for(i=0 ; i< HYDROGEN_RAM_COMMAND_OUTPUT_LENGTH; i=i+1)
-	  {
-	    target_read_u8(target, HYDROGEN_RAM_ADDRESS_OUTPUT_INFO+i, &value8);//output info
-	    if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Value read from memory address 0x%x=0x%x", HYDROGEN_RAM_ADDRESS_OUTPUT_INFO+i, value8);
-	    command_output[i]=value8;
-	  } 
-
-	if(command_output[0]==0x01 && command_output[1]==0x17 && command_output[2]==0x01 && command_output[3]==0x17 )
-	  {
-	    //condition 1
-	    if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("hydrogen_probe: assigned page size and num sectors");
-	    sector_length=HYDROGEN_FLASH_PAGE_SIZE;
-	    num_sectors=HYDROGEN_FLASH_NUM_SECTORS;
-	    max_sectors=num_sectors;
-	  }
-	else
-	  {
-	    sector_length=0;
-	    num_sectors=0;
-	    max_sectors=0;
-	  }
-
-	hydrogen_bank->device_type=0;
-	hydrogen_bank->device_type = (command_output[0]<<24) + (command_output[1]<<16) + (command_output[2]<<8) + command_output[3];
-
-	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Assigned device_type num= 0x%x 0x%x 0x%x 0x%x 0x%x\n", hydrogen_bank->device_type, command_output[0],command_output[1], command_output[2],command_output[3]);
 	
+	hydrogen_bank->algo_code = hydrogen_algo;
+	hydrogen_bank->algo_size = sizeof(hydrogen_algo);
+	hydrogen_bank->algo_working_size = HYDROGEN_WORKING_SIZE;
+	hydrogen_bank->buffer_addr = HYDROGEN_ALGO_BUFFER;
+	hydrogen_bank->params_addr = HYDROGEN_ALGO_PARAMS;
+	
+	/* We've successfully determined the stats on the flash bank */
+	hydrogen_bank->probed = true;
 
+	
+	int retval = hydrogen_init(bank);
+	if (retval != ERROR_OK)
+		return retval;
+	
+	
 //	/* Set up appropriate flash helper algorithm */
 //	switch (hydrogen_bank->jtag_id & JTAG_ID_MASK) {
 //		case HYDROGEN_V1_JTAG_ID:
@@ -552,15 +562,58 @@ static int hydrogen_probe(struct flash_bank *bank)
 //	if (retval != ERROR_OK)
 //		return retval;
 //	num_sectors = value & 0xff;
+	
+	retval = target_write_u8(target, HYDROGEN_RAM_ADDRESS_COMMAND2EXEC, HYDROGEN_FLASH_COMMAND_READ_FLASHID);//command to read flash info
+	if (retval){
+		(void)hydrogen_quit(bank);
+		return ERROR_FAIL;
+	}
+	//wait until command executed:
+	hydrogen_wait_algo_done(bank);
+
+	for(i=0 ; i< HYDROGEN_RAM_COMMAND_OUTPUT_LENGTH; i=i+1)
+	  {
+	    target_read_u8(target, HYDROGEN_RAM_ADDRESS_OUTPUT_INFO+i, &value8);//output info
+	    if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Value read from memory address 0x%x=0x%x", HYDROGEN_RAM_ADDRESS_OUTPUT_INFO+i, value8);
+	    command_output[i]=value8;
+	  } 
+
+	/*if(command_output[0]==0x01 && command_output[1]==0x17 && command_output[2]==0x01 && command_output[3]==0x17 )
+	  {
+	    //condition 1
+	    if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("hydrogen_probe: assigned page size and num sectors");
+	    sector_length=HYDROGEN_FLASH_PAGE_SIZE;
+	    num_sectors=HYDROGEN_FLASH_NUM_SECTORS;
+	    max_sectors=num_sectors;
+	  }
+	else
+	  {
+	    sector_length=0;
+	    num_sectors=0;
+	    max_sectors=0;
+	  }*/
+	 sector_length=HYDROGEN_FLASH_PAGE_SIZE;
+    	num_sectors=HYDROGEN_FLASH_NUM_SECTORS;
+   	max_sectors=num_sectors;
+
+	hydrogen_bank->device_type=0;
+	hydrogen_bank->device_type = (command_output[0]<<24) + (command_output[1]<<16) + (command_output[2]<<8) + command_output[3];
+
+	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Assigned device_type num= 0x%x 0x%x 0x%x 0x%x 0x%x\n", hydrogen_bank->device_type, command_output[0],command_output[1], command_output[2],command_output[3]);
+	
+
+
 	if (num_sectors > max_sectors)
 		num_sectors = max_sectors;
 
 
 	bank->sectors = malloc(sizeof(struct flash_sector) * num_sectors);
-	if (!bank->sectors)
+	if (!bank->sectors){
+		(void)hydrogen_quit(bank);
 		return ERROR_FAIL;
+	}
 
-	bank->base = HYDROGEN_RAM_ADDRESS_BUFFER;
+	bank->base = 0;
 	bank->num_sectors = num_sectors;
 	bank->size = num_sectors * sector_length;
 	bank->write_start_alignment = 0;
@@ -574,11 +627,10 @@ static int hydrogen_probe(struct flash_bank *bank)
 		bank->sectors[i].is_protected = 0;
 	}
 
-	/* We've successfully determined the stats on the flash bank */
-	hydrogen_bank->probed = true;
-
+	
 	/* If we fall through to here, then all went well */
 	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Exit from hydrogen_probe with sector_length=%d, num_sectors=%d, bank->size=%d\n",sector_length,num_sectors,bank->size);
+	(void)hydrogen_quit(bank);
 
 	return ERROR_OK;
 }
@@ -703,8 +755,8 @@ static int hydrogen_flash_blank_check(struct flash_bank *bank)
 	target_write_u8(target,HYDROGEN_RAM_ADDRESS_COMMAND2EXEC,HYDROGEN_FLASH_COMMAND_VERIFY_ALL_BLANK);
 	retval = hydrogen_wait_algo_done(bank);
 
-	//	/* Regardless of errors, try to close down algo */
-	//	(void)hydrogen_quit(bank);
+		/* Regardless of errors, try to close down algo */
+		(void)hydrogen_quit(bank);
 
 	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Exit from hydrogen_flash_blank_check \n");
 
