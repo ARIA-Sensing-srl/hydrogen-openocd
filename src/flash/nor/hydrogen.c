@@ -23,6 +23,7 @@
 
 
 //#define FLASH_TIMEOUT 2000
+#define FLASH_DEFAULT_SECTOR_SiZE 4096
 #define DEFAULT_TIMEOUT_ms 2000
 #define MASS_ERASE_TIMEOUT_ms 60000
 #define HYDROGEN_DRIVER_DEBUG 2
@@ -261,14 +262,14 @@ FLASH_BANK_COMMAND_HANDLER(hydrogen_flash_bank_command)
 	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Enter in hydrogen FLASH_BANK_COMMAND_HANDLER  \n");
 
 /*
-//standard option
+//standard options (6 args)
 0:driver name
 1:flash base
 2:flash size
 3:chip_width
 4:bus_width
 5:target
-//extended
+//extended (7 args)
 6:erase_sector size
 */
 	if (CMD_ARGC < 6)
@@ -277,19 +278,61 @@ FLASH_BANK_COMMAND_HANDLER(hydrogen_flash_bank_command)
 	hydrogen_bank = malloc(sizeof(struct hydrogen_bank));
 	if (!hydrogen_bank)
 		return ERROR_FAIL;
-	uint32_t banknum;
+	uint32_t baseaddress;
 	uint32_t flashsize;
-	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], banknum);
+	uint32_t sectorsize;
+	
+	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[1], baseaddress);
 	COMMAND_PARSE_NUMBER(u32, CMD_ARGV[2], flashsize);
 	
-	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Args %d, BankNum %d, flashsize %d\n",CMD_ARGC, banknum, flashsize);
+	if (CMD_ARGC == 7){
+		COMMAND_PARSE_NUMBER(u32, CMD_ARGV[6], sectorsize);
+	}else{
+		
+		sectorsize = FLASH_DEFAULT_SECTOR_SiZE;
+		LOG_INFO("Use default sector size %d\n", sectorsize);
+	}
+	
+	
+	
+	if(HYDROGEN_DRIVER_DEBUG==2) LOG_INFO("Args %d, baseaddress %d, flashsize %d, sectorsize %d\n",CMD_ARGC, baseaddress, flashsize, sectorsize);
 	
 
 	/* Initialize private flash information */
 	memset((void *)hydrogen_bank, 0x00, sizeof(struct hydrogen_bank));
 	hydrogen_bank->family_name = "hydrogen";
 	hydrogen_bank->device_type = HYDROGEN_NO_TYPE;
-	hydrogen_bank->sector_length = HYDROGEN_FLASH_SECTORS_LENGTH;
+	hydrogen_bank->sector_length = sectorsize;
+	
+	//init memory
+	
+	int sector_length=sectorsize;
+	int num_sectors=flashsize/sectorsize;
+   	int max_sectors=num_sectors;
+
+	if (num_sectors > max_sectors)
+		num_sectors = max_sectors;
+
+
+	bank->sectors = malloc(sizeof(struct flash_sector) * num_sectors);
+	if (!bank->sectors){
+		//(void)hydrogen_quit(bank);
+		return ERROR_FAIL;
+	}
+
+	bank->base = baseaddress;
+	bank->num_sectors = num_sectors;
+	bank->size = num_sectors * sector_length;
+	bank->write_start_alignment = 0;
+	bank->write_end_alignment = 0;
+	hydrogen_bank->sector_length = sector_length;
+
+	for (int i = 0; i < num_sectors; i++) {
+		bank->sectors[i].offset = i * sector_length;
+		bank->sectors[i].size = sector_length;
+		bank->sectors[i].is_erased = -1;
+		bank->sectors[i].is_protected = 0;
+	}
 
 	/* Finish initialization of bank */
 	bank->driver_priv = hydrogen_bank;
@@ -423,6 +466,7 @@ static int hydrogen_write(struct flash_bank *bank, const uint8_t *buffer,
 		  elapsed_ms = timeval_ms() - start_ms;
 		  if (elapsed_ms > 500){
 		    keep_alive();
+		    start_ms = timeval_ms();
 		   }
 		}
 	
@@ -500,8 +544,10 @@ static int hydrogen_read(struct flash_bank *bank, uint8_t *buffer,
 		  offset += size;
 		  
 		  elapsed_ms = timeval_ms() - start_ms;
-		  if (elapsed_ms > 500)
+		  if (elapsed_ms > 500){
 		    keep_alive();
+		    start_ms =  timeval_ms();
+		    }
 		}
 	
 		/* If no error yet, wait for last buffer to finish */
@@ -527,12 +573,12 @@ static int hydrogen_probe(struct flash_bank *bank)
 	struct target *target = bank->target;
 	struct hydrogen_bank *hydrogen_bank = bank->driver_priv;
 
-	uint32_t sector_length;
+	/*uint32_t sector_length;
 	int num_sectors;
-	int max_sectors;
+	int max_sectors;*/
 	uint8_t  command_output[FLASH_ID_SIZE];
 
-     	int i;
+//     	int i;
 
 
 	
@@ -572,7 +618,7 @@ static int hydrogen_probe(struct flash_bank *bank)
 	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Assigned device_type num= 0x%x 0x%x 0x%x 0x%x 0x%x\n", hydrogen_bank->device_type, command_output[0],command_output[1], command_output[2],command_output[3]);
 	
 
-	sector_length=HYDROGEN_FLASH_PAGE_SIZE;
+	/*sector_length=HYDROGEN_FLASH_PAGE_SIZE;
     	num_sectors=HYDROGEN_FLASH_NUM_SECTORS;
    	max_sectors=num_sectors;
 
@@ -598,11 +644,11 @@ static int hydrogen_probe(struct flash_bank *bank)
 		bank->sectors[i].size = sector_length;
 		bank->sectors[i].is_erased = -1;
 		bank->sectors[i].is_protected = 0;
-	}
+	}*/
 
 	
 	/* If we fall through to here, then all went well */
-	if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Exit from hydrogen_probe with sector_length=%d, num_sectors=%d, bank->size=%d\n",sector_length,num_sectors,bank->size);
+	//if(HYDROGEN_DRIVER_DEBUG) LOG_INFO("Exit from hydrogen_probe with sector_length=%d, num_sectors=%d, bank->size=%d\n",sector_length,num_sectors,bank->size);
 	(void)hydrogen_quit(bank);
 
 	return ERROR_OK;
