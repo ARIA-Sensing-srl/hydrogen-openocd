@@ -500,11 +500,7 @@ int arc_jtag_read_memory(struct arc_jtag *jtag_info, uint32_t addr,
 	if (!count)
 		return ERROR_OK;
 
-<<<<<<< HEAD
-	data_buf = calloc(count * 4,sizeof(uint8_t));
-=======
 	data_buf = calloc(count * 4, sizeof(uint8_t));
->>>>>>> official_openocd/master
 	arc_jtag_enque_reset_transaction(jtag_info);
 
 	/* We are reading from memory. */

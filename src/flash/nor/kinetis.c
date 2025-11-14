@@ -1032,11 +1032,7 @@ static int kinetis_create_missing_banks(struct kinetis_chip *k_chip)
 					 bank_idx - k_chip->num_pflash_blocks);
 		}
 
-<<<<<<< HEAD
-		bank = calloc(1,sizeof(struct flash_bank));
-=======
 		bank = calloc(1, sizeof(struct flash_bank));
->>>>>>> official_openocd/master
 		if (!bank)
 			return ERROR_FAIL;
 
