@@ -111,7 +111,7 @@ size_t strnlen(const char *s, size_t maxlen);
 
 #ifndef HAVE_USLEEP
 #ifdef _WIN32
-static inline unsigned usleep(unsigned int usecs)
+static inline unsigned int usleep(unsigned int usecs)
 {
 	Sleep((usecs/1000));
 	return 0;
@@ -222,6 +222,20 @@ static inline int socket_select(int max_fd,
 	return win_select(max_fd, rfds, wfds, efds, tv);
 #else
 	return select(max_fd, rfds, wfds, efds, tv);
+#endif
+}
+
+static inline int socket_recv_timeout(int fd, unsigned long timeout_msec)
+{
+#ifdef _WIN32
+	DWORD timeout = timeout_msec;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&timeout,
+			sizeof(timeout));
+#else
+	struct timeval tv;
+	tv.tv_sec = timeout_msec / 1000;
+	tv.tv_usec = (timeout_msec % 1000) * 1000;
+	return setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, (const char *)&tv, sizeof(tv));
 #endif
 }
 

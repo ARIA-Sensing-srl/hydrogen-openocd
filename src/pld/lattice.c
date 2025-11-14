@@ -59,7 +59,7 @@ static const struct lattice_devices_elem lattice_devices[] = {
 	{0x010f4043,  362, LATTICE_CERTUS /* LFCPNX-100 */},
 };
 
-int lattice_set_instr(struct jtag_tap *tap, uint8_t new_instr, tap_state_t endstate)
+int lattice_set_instr(struct jtag_tap *tap, uint8_t new_instr, enum tap_state endstate)
 {
 	struct scan_field field;
 	field.num_bits = tap->ir_length;
@@ -81,7 +81,7 @@ static int lattice_check_device_family(struct lattice_pld_device *lattice_device
 	if (lattice_device->family != LATTICE_UNKNOWN && lattice_device->preload_length != 0)
 		return ERROR_OK;
 
-	if (!lattice_device->tap || !lattice_device->tap->hasidcode)
+	if (!lattice_device->tap || !lattice_device->tap->has_idcode)
 		return ERROR_FAIL;
 
 	for (size_t i = 0; i < ARRAY_SIZE(lattice_devices); ++i) {
@@ -280,7 +280,7 @@ static int lattice_load_command(struct pld_device *pld_device, const char *filen
 		return ERROR_FAIL;
 	struct jtag_tap *tap = lattice_device->tap;
 
-	if (!tap || !tap->hasidcode)
+	if (!tap || !tap->has_idcode)
 		return ERROR_FAIL;
 
 	int retval = lattice_check_device_family(lattice_device);
@@ -319,7 +319,7 @@ static int lattice_load_command(struct pld_device *pld_device, const char *filen
 	return retval;
 }
 
-int lattice_get_ipdbg_hub(int user_num, struct pld_device *pld_device, struct pld_ipdbg_hub *hub)
+static int lattice_get_ipdbg_hub(int user_num, struct pld_device *pld_device, struct pld_ipdbg_hub *hub)
 {
 	if (!pld_device)
 		return ERROR_FAIL;
@@ -339,6 +339,76 @@ int lattice_get_ipdbg_hub(int user_num, struct pld_device *pld_device, struct pl
 		LOG_ERROR("lattice devices only have user register 1 & 2");
 		return ERROR_FAIL;
 	}
+	return ERROR_OK;
+}
+
+static int lattice_connect_spi_to_jtag(struct pld_device *pld_device)
+{
+	if (!pld_device)
+		return ERROR_FAIL;
+
+	struct lattice_pld_device *pld_device_info = pld_device->driver_priv;
+
+	int retval = lattice_check_device_family(pld_device_info);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (pld_device_info->family == LATTICE_ECP2 || pld_device_info->family == LATTICE_ECP3)
+		return lattice_ecp2_3_connect_spi_to_jtag(pld_device_info);
+	else if (pld_device_info->family == LATTICE_ECP5)
+		return lattice_ecp5_connect_spi_to_jtag(pld_device_info);
+	else if (pld_device_info->family == LATTICE_CERTUS)
+		return lattice_certus_connect_spi_to_jtag(pld_device_info);
+
+	return ERROR_FAIL;
+}
+
+static int lattice_disconnect_spi_from_jtag(struct pld_device *pld_device)
+{
+	if (!pld_device)
+		return ERROR_FAIL;
+
+	struct lattice_pld_device *pld_device_info = pld_device->driver_priv;
+
+	int retval = lattice_check_device_family(pld_device_info);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (pld_device_info->family == LATTICE_ECP2 || pld_device_info->family == LATTICE_ECP3)
+		return lattice_ecp2_3_disconnect_spi_from_jtag(pld_device_info);
+	else if (pld_device_info->family == LATTICE_ECP5)
+		return lattice_ecp5_disconnect_spi_from_jtag(pld_device_info);
+	else if (pld_device_info->family == LATTICE_CERTUS)
+		return lattice_certus_disconnect_spi_from_jtag(pld_device_info);
+
+	return ERROR_FAIL;
+}
+
+static int lattice_get_stuff_bits(struct pld_device *pld_device, unsigned int *facing_read_bits,
+		unsigned int *trailing_write_bits)
+{
+	if (!pld_device)
+		return ERROR_FAIL;
+
+	struct lattice_pld_device *pld_device_info = pld_device->driver_priv;
+
+	int retval = lattice_check_device_family(pld_device_info);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (pld_device_info->family == LATTICE_ECP2 || pld_device_info->family == LATTICE_ECP3)
+		return lattice_ecp2_3_get_facing_read_bits(pld_device_info, facing_read_bits);
+	else if (pld_device_info->family == LATTICE_ECP5)
+		return lattice_ecp5_get_facing_read_bits(pld_device_info, facing_read_bits);
+	else if (pld_device_info->family == LATTICE_CERTUS)
+		return lattice_certus_get_facing_read_bits(pld_device_info, facing_read_bits);
+
+	return ERROR_FAIL;
+}
+
+static int lattice_has_jtagspi_instruction(struct pld_device *device, bool *has_instruction)
+{
+	*has_instruction = true;
 	return ERROR_OK;
 }
 
@@ -505,6 +575,35 @@ COMMAND_HANDLER(lattice_read_status_command_handler)
 	return retval;
 }
 
+COMMAND_HANDLER(lattice_refresh_command_handler)
+{
+	if (CMD_ARGC != 1)
+		return ERROR_COMMAND_SYNTAX_ERROR;
+
+	struct pld_device *device = get_pld_device_by_name_or_numstr(CMD_ARGV[0]);
+	if (!device) {
+		command_print(CMD, "pld device '#%s' is out of bounds or unknown", CMD_ARGV[0]);
+		return ERROR_FAIL;
+	}
+
+	struct lattice_pld_device *lattice_device = device->driver_priv;
+	if (!lattice_device)
+		return ERROR_FAIL;
+
+	int retval = lattice_check_device_family(lattice_device);
+	if (retval != ERROR_OK)
+		return retval;
+
+	if (lattice_device->family == LATTICE_ECP2 || lattice_device->family == LATTICE_ECP3)
+		return lattice_ecp2_3_refresh(lattice_device);
+	else if (lattice_device->family == LATTICE_ECP5)
+		return lattice_ecp5_refresh(lattice_device);
+	else if (lattice_device->family == LATTICE_CERTUS)
+		return lattice_certus_refresh(lattice_device);
+
+	return ERROR_FAIL;
+}
+
 static const struct command_registration lattice_exec_command_handlers[] = {
 	{
 		.name = "read_status",
@@ -526,10 +625,16 @@ static const struct command_registration lattice_exec_command_handlers[] = {
 		.usage = "pld_name value",
 	}, {
 		.name = "set_preload",
-		.mode = COMMAND_EXEC,
+		.mode = COMMAND_ANY,
 		.handler = lattice_set_preload_command_handler,
 		.help = "set length for preload (device specific)",
 		.usage = "pld_name value",
+	}, {
+		.name = "refresh",
+		.mode = COMMAND_EXEC,
+		.handler = lattice_refresh_command_handler,
+		.help = "refresh from configuration memory",
+		.usage = "pld_name",
 	},
 	COMMAND_REGISTRATION_DONE
 };
@@ -551,4 +656,8 @@ struct pld_driver lattice_pld = {
 	.pld_create_command = &lattice_pld_create_command,
 	.load = &lattice_load_command,
 	.get_ipdbg_hub = lattice_get_ipdbg_hub,
+	.has_jtagspi_instruction = lattice_has_jtagspi_instruction,
+	.connect_spi_to_jtag = lattice_connect_spi_to_jtag,
+	.disconnect_spi_from_jtag = lattice_disconnect_spi_from_jtag,
+	.get_stuff_bits = lattice_get_stuff_bits,
 };
